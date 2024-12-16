@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Face Recognition with Webcam and Template</title>
+  <style>
+    video {
+      width: 100%;
+      max-width: 640px;
+    }
+  </style>
+</head>
+<body>
+  <video id="video" autoplay muted playsinline></video>
+
+  <!-- Load face-api.js from local file -->
+  <script src="face-api.js/dist/face-api.min.js"></script>
+
+  <!-- Your custom script -->
+  <script>
+    window.onload = async () => {
+      const video = document.getElementById('video');
+      let templateFaceDescriptor = null;
+
+      // Check if face-api.js is loaded
+      if (typeof faceapi === 'undefined') {
+        console.error('face-api.js is not loaded correctly');
+        return;
+      }
+
+      // Load face-api.js models
+      async function loadModels() {
+        await faceapi.nets.tinyFaceDetector.loadFromUri('models');
+        await faceapi.nets.faceLandmark68Net.loadFromUri('models');
+        await faceapi.nets.faceRecognitionNet.loadFromUri('models');
+        console.log('Models loaded');
+      }
+
+      // Load the template image and extract its face descriptor
+      async function loadTemplate() {
+        try {
+          const templateImage = await faceapi.fetchImage('images\template.jpg');
+          const detections = await faceapi.detectSingleFace(templateImage)
+            .withFaceLandmarks()
+            .withFaceDescriptor();
+
+          if (detections) {
+            templateFaceDescriptor = detections.descriptor;
+            console.log('Template face descriptor loaded');
+          } else {
+            console.error('No face detected in the template image');
+          }
+        } catch (error) {
+          console.error('Error loading template image:', error);
+        }
+      }
+
+      // Start video stream
+      async function startVideo() {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          console.log('Webcam stream:', stream);
+          video.srcObject = stream;
+        } catch (err) {
+          console.error('Error accessing webcam:', err);
+          alert('Webcam access failed or denied.');
+        }
+      }
+
+      // Event listener when video starts playing
+      video.addEventListener('play', async () => {
+        const canvas = faceapi.createCanvasFromMedia(video);
+        document.body.append(canvas);
+        const displaySize = { width: video.videoWidth, height: video.videoHeight };
+        faceapi.matchDimensions(canvas, displaySize);
+
+        setInterval(async () => {
+          // Detect faces in the video stream
+          const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+            .withFaceLandmarks()
+            .withFaceDescriptors();
+
+          const resizedDetections = faceapi.resizeResults(detections, displaySize);
+          canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+          faceapi.draw.drawDetections(canvas, resizedDetections);
+          faceapi.draw.drawFaceLandmarks(canvas, resizedDetections);
+
+          // If a face descriptor for the webcam is found, compare it with the template
+          if (templateFaceDescriptor && detections.length > 0) {
+            const distances = detections.map(d => faceapi.euclideanDistance(d.descriptor, templateFaceDescriptor));
+            const minDistance = Math.min(...distances);
+
+            // If the distance is below a threshold, it means the faces match
+            if (minDistance < 0.6) {  // Adjust this threshold as needed
+              console.log('Template face matched!');
+            } else {
+              console.log('No match');
+            }
+          }
+        }, 100);  // Update every 100ms
+      });  // End of play event listener
+
+      // Initialize models, load template, and start video stream
+      await loadModels();  // Load the models first
+      await loadTemplate();  // Load the template face descriptor
+      startVideo(); // Start the webcam stream
+    };  // End of window.onload function
+  </script>
+</body>
+</html>
