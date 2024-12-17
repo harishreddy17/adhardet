@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aadhaar Verification with Webcam</title>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.0.2/dist/tesseract.min.js"></script>
+  <script src="face-api.js/dist/face-api.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+
+    h1 {
+      text-align: center;
+      color: #333;
+    }
+
+    input, button {
+      display: block;
+      margin: 20px auto;
+    }
+
+    #output, #webcamOutput {
+      text-align: center;
+    }
+
+    canvas, img, video {
+      display: block;
+      margin: 20px auto;
+      border: 1px solid #ccc;
+    }
+
+    p {
+      font-size: 18px;
+      color: #555;
+    }
+
+    .highlight {
+      color: green;
+      font-weight: bold;
+    }
+
+    #result {
+      font-size: 20px;
+      color: blue;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <h1>Aadhaar Verification with Webcam</h1>
+  <input type="file" id="fileInput" accept="image/*" />
+  <div id="output">
+    <h3>Extracted Aadhaar Number:</h3>
+    <p id="aadhaarNumber">No data yet.</p>
+    <canvas id="canvas"></canvas>
+    <h3>Detected Face:</h3>
+    <img id="detectedFace" alt="Detected Face" />
+  </div>
+
+  <div id="webcamOutput">
+    <h3>Webcam Feed:</h3>
+    <video id="webcam" autoplay></video>
+    <canvas id="webcamCanvas"></canvas>
+    <h3>Verification Result:</h3>
+    <p id="result">No verification performed yet.</p>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const aadhaarNumberElement = document.getElementById('aadhaarNumber');
+    const detectedFaceImg = document.getElementById('detectedFace');
+
+    const webcam = document.getElementById('webcam');
+    const webcamCanvas = document.getElementById('webcamCanvas');
+    const webcamCtx = webcamCanvas.getContext('2d');
+    const resultElement = document.getElementById('result');
+
+    let aadhaarFaceDescriptor = null;
+    let webcamStream = null;
+    let isVerified = false;  // Flag to check if verification is already done
+
+    // Load face-api.js models
+    Promise.all([
+      faceapi.nets.ssdMobilenetv1.loadFromUri('models'),
+      faceapi.nets.faceLandmark68Net.loadFromUri('models'),
+      faceapi.nets.faceRecognitionNet.loadFromUri('models'),
+    ]).then(() => {
+      console.log('Face-api.js models loaded');
+    });
+
+    // Aadhaar image processing
+    fileInput.addEventListener('change', async (event) => {
+      const file = event.target.files[0];
+      if (!file) {
+        alert('Please upload an image file.');
+        return;
+      }
+
+      const image = new Image();
+      image.src = URL.createObjectURL(file);
+
+      image.onload = async () => {
+        // Display the image on the canvas
+        canvas.width = image.width;
+        canvas.height = image.height;
+        ctx.drawImage(image, 0, 0);
+
+        // Extract Aadhaar number using Tesseract.js
+        Tesseract.recognize(image.src, 'eng', {
+          logger: (info) => console.log(info),
+        }).then(({ data }) => {
+          const text = data.text;
+          console.log('Extracted Text:', text);
+
+          // Regex to match Aadhaar number pattern
+          const aadhaarRegex = /\b\d{4}\s\d{4}\s\d{4}\b/;
+          const match = text.match(aadhaarRegex);
+          if (match) {
+            aadhaarNumberElement.innerHTML = `<span class="highlight">${match[0]}</span>`;
+          } else {
+            aadhaarNumberElement.textContent = 'No Aadhaar number found.';
+          }
+        });
+
+        // Detect face from Aadhaar card
+        const detections = await faceapi.detectSingleFace(image).withFaceLandmarks().withFaceDescriptor();
+        if (detections) {
+          const { box } = detections.detection;
+
+          // Highlight face on canvas
+          ctx.strokeStyle = 'red';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(box.x, box.y, box.width, box.height);
+
+          // Extract face descriptor
+          aadhaarFaceDescriptor = detections.descriptor;
+
+          // Display the detected face
+          const faceCanvas = document.createElement('canvas');
+          faceCanvas.width = box.width;
+          faceCanvas.height = box.height;
+
+          const faceCtx = faceCanvas.getContext('2d');
+          faceCtx.drawImage(
+            image,
+            box.x, box.y, box.width, box.height,
+            0, 0, box.width, box.height
+          );
+
+          detectedFaceImg.src = faceCanvas.toDataURL('image/png');
+        } else {
+          console.log('No face detected in Aadhaar image.');
+          aadhaarFaceDescriptor = null;
+          detectedFaceImg.alt = 'No face detected.';
+        }
+      };
+    });
+
+    // Start webcam
+    navigator.mediaDevices
+      .getUserMedia({ video: true })
+      .then((stream) => {
+        webcam.srcObject = stream;
+        webcamStream = stream; // Store the webcam stream for later stopping
+      })
+      .catch((err) => {
+        console.error('Error accessing webcam:', err);
+      });
+
+    // Continuously compare face from webcam with Aadhaar face descriptor
+    async function compareFace() {
+      if (isVerified) return; // Stop comparison if already verified
+
+      if (!aadhaarFaceDescriptor) {
+        resultElement.textContent = 'No Aadhaar face detected for comparison.';
+        resultElement.style.color = 'red';
+        return;
+      }
+
+      // Draw the webcam video frame on canvas
+      webcamCanvas.width = webcam.videoWidth;
+      webcamCanvas.height = webcam.videoHeight;
+      webcamCtx.drawImage(webcam, 0, 0, webcamCanvas.width, webcamCanvas.height);
+
+      // Detect face from webcam frame
+      const webcamImage = await faceapi.detectSingleFace(webcamCanvas).withFaceLandmarks().withFaceDescriptor();
+      if (webcamImage) {
+        // Compare face descriptors
+        const distance = faceapi.euclideanDistance(aadhaarFaceDescriptor, webcamImage.descriptor);
+        console.log('Face similarity distance:', distance);
+
+        // Display result
+        if (distance < 0.6) {
+          resultElement.textContent = 'Faces match! Verification successful.';
+          resultElement.style.color = 'green';
+
+          // Set the flag to prevent further comparisons and stop the webcam
+          isVerified = true;
+          stopWebcam();
+        } else {
+          resultElement.textContent = 'Faces do not match. Verification failed.';
+          resultElement.style.color = 'red';
+        }
+      } else {
+        resultElement.textContent = 'No face detected in webcam snapshot.';
+        resultElement.style.color = 'red';
+      }
+    }
+
+    // Function to stop the webcam
+    function stopWebcam() {
+      if (webcamStream) {
+        const tracks = webcamStream.getTracks();
+        tracks.forEach((track) => track.stop()); // Stop all tracks in the webcam stream
+      }
+    }
+
+    // Continuously compare face every second
+    setInterval(compareFace, 1000); // Check every second
+
+  </script>
+</body>
+</html>
